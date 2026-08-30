@@ -1,0 +1,32 @@
+services:
+  ide-backend:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ide-data:/app/data
+    networks:
+      - skwtr
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"   # remove this in prod, backend reaches it internally
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - skwtr
+    restart: unless-stopped
+
+volumes:
+  ide-data:
+  ollama-data:
+
+networks:
+  skwtr:
+    driver: bridge
