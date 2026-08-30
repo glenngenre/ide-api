@@ -15,7 +15,7 @@ RUN swag init
 RUN go build -ldflags="-s -w" -o /app/server .
 
 # ── Final image ───────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12
+FROM alpine:3.20
 
 WORKDIR /app
 
