@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -13,22 +12,39 @@ import (
 )
 
 type loginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username string `json:"username" example:"admin"`
+	Password string `json:"password" example:"supersecret"`
 }
 
 type registerRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Role     string `json:"role"` // "admin" | "user" — defaults to "user"
+	Username string `json:"username" example:"glenn"`
+	Password string `json:"password" example:"supersecret"`
+	Role     string `json:"role"     example:"user" enums:"admin,user"`
 }
 
 type authResponse struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	Token    string `json:"token"    example:"eyJhbGci..."`
+	Username string `json:"username" example:"admin"`
+	Role     string `json:"role"     example:"admin"`
 }
 
+type errorResponse struct {
+	Error string `json:"error" example:"invalid credentials"`
+}
+
+// Login godoc
+//
+//	@Summary		Login
+//	@Description	Authenticate with username and password, receive a JWT.
+//	@Tags			auth
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		loginRequest	true	"Credentials"
+//	@Success		200		{object}	authResponse
+//	@Failure		400		{object}	errorResponse
+//	@Failure		401		{object}	errorResponse
+//	@Failure		500		{object}	errorResponse
+//	@Router			/v1/auth/login [post]
 func Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -37,46 +53,60 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
 	if req.Username == "" || req.Password == "" {
-		http.Error(w, `{"error":"username and password are required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
 
 	user, err := db.GetUserByUsername(req.Username)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if user == nil {
-		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
 	token, err := middleware.IssueToken(user.ID, user.Username, user.Role)
 	if err != nil {
-		http.Error(w, `{"error":"failed to issue token"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(authResponse{
+	writeJSON(w, http.StatusOK, authResponse{
 		Token:    token,
 		Username: user.Username,
 		Role:     user.Role,
 	})
 }
 
-// Register is admin-only (enforced by middleware in main.go).
+// Register godoc
+//
+//	@Summary		Register a new user
+//	@Description	Create a new user. Requires an admin JWT.
+//	@Tags			auth
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		registerRequest	true	"New user details"
+//	@Success		201		{object}	models.User
+//	@Failure		400		{object}	errorResponse
+//	@Failure		401		{object}	errorResponse
+//	@Failure		403		{object}	errorResponse
+//	@Failure		409		{object}	errorResponse
+//	@Failure		500		{object}	errorResponse
+//	@Security		BearerAuth
+//	@Router			/v1/auth/register [post]
 func Register(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -85,18 +115,18 @@ func Register(w http.ResponseWriter, r *http.Request) {
 
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
 	if req.Username == "" || req.Password == "" {
-		http.Error(w, `{"error":"username and password are required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
 
 	if len(req.Password) < 8 {
-		http.Error(w, `{"error":"password must be at least 8 characters"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
 
@@ -107,32 +137,41 @@ func Register(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := db.GetUserByUsername(req.Username)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if existing != nil {
-		http.Error(w, `{"error":"username already exists"}`, http.StatusConflict)
+		writeError(w, http.StatusConflict, "username already exists")
 		return
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, `{"error":"failed to hash password"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to hash password")
 		return
 	}
 
 	user, err := db.CreateUser(req.Username, string(hash), role)
 	if err != nil {
-		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create user")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(user)
+	writeJSON(w, http.StatusCreated, user)
 }
 
-// ListUsers is admin-only.
+// ListUsers godoc
+//
+//	@Summary		List all users
+//	@Description	Returns all registered users. Requires an admin JWT.
+//	@Tags			auth
+//	@Produce		json
+//	@Success		200	{array}		models.User
+//	@Failure		401	{object}	errorResponse
+//	@Failure		403	{object}	errorResponse
+//	@Failure		500	{object}	errorResponse
+//	@Security		BearerAuth
+//	@Router			/v1/auth/users [get]
 func ListUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -141,14 +180,27 @@ func ListUsers(w http.ResponseWriter, r *http.Request) {
 
 	users, err := db.ListUsers()
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(users)
+	writeJSON(w, http.StatusOK, users)
 }
 
+// DeleteUser godoc
+//
+//	@Summary		Delete a user
+//	@Description	Delete a user by ID. Requires an admin JWT. Admins cannot delete themselves.
+//	@Tags			auth
+//	@Produce		json
+//	@Param			id	path		int	true	"User ID"
+//	@Success		204	"No Content"
+//	@Failure		400	{object}	errorResponse
+//	@Failure		401	{object}	errorResponse
+//	@Failure		403	{object}	errorResponse
+//	@Failure		500	{object}	errorResponse
+//	@Security		BearerAuth
+//	@Router			/v1/auth/users/{id} [delete]
 func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -156,27 +208,57 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
-	if len(parts) == 0 || parts[len(parts)-1] == "" {
-		http.Error(w, `{"error":"missing user id"}`, http.StatusBadRequest)
+	if len(parts) == 0 {
+		writeError(w, http.StatusBadRequest, "missing user id")
 		return
 	}
 
-	id, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	idStr := parts[len(parts)-1]
+	id, err := parseInt64(idStr)
 	if err != nil {
-		http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
 
 	caller := middleware.GetClaims(r)
 	if caller.UserID == id {
-		http.Error(w, `{"error":"cannot delete yourself"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "cannot delete yourself")
 		return
 	}
 
 	if err := db.DeleteUser(id); err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(errorResponse{Error: msg})
+}
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, &parseError{}
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n, nil
+}
+
+type parseError struct{}
+
+func (e *parseError) Error() string { return "parse error" }
