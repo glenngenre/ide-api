@@ -7,8 +7,8 @@
 //	@contact.name	Glenn
 //	@contact.url	https://skwtr.com
 //
-//	@host		ide-api.apps.skwtr.com
-//	@BasePath	/
+//	@host		api.apps.skwtr.com
+//	@BasePath	/ide
 //
 //	@securityDefinitions.apikey	BearerAuth
 //	@in							header
