@@ -17,6 +17,16 @@ func init() {
 	}
 }
 
+func applyJudge0Headers(req *http.Request) {
+	if auth := strings.TrimSpace(os.Getenv("JUDGE0_AUTHN_TOKEN")); auth != "" {
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			req.Header.Set("Authorization", auth)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+	}
+}
+
 // RunCode godoc
 //
 //	@Summary		Submit code to Judge0
@@ -54,13 +64,7 @@ func RunCode(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
 	proxyReq.Header.Set("Accept", "application/json")
-
-	if region := strings.TrimSpace(os.Getenv("JUDGE0_REGION")); region != "" {
-		proxyReq.Header.Set("x-judge0-region", region)
-	}
-	if runtime := strings.TrimSpace(os.Getenv("JUDGE0_RUNTIME")); runtime != "" {
-		proxyReq.Header.Set("x-runtime", runtime)
-	}
+	applyJudge0Headers(proxyReq)
 
 	resp, err := (&http.Client{}).Do(proxyReq)
 	if err != nil {
@@ -109,6 +113,7 @@ func GetSubmissionStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyReq.Header.Set("Accept", "application/json")
+	applyJudge0Headers(proxyReq)
 
 	resp, err := (&http.Client{}).Do(proxyReq)
 	if err != nil {
