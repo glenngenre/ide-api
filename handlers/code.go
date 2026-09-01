@@ -22,11 +22,7 @@ func init() {
 
 func applyJudge0Headers(req *http.Request) {
 	if auth := strings.TrimSpace(os.Getenv("JUDGE0_AUTHN_TOKEN")); auth != "" {
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			req.Header.Set("Authorization", auth)
-		} else {
-			req.Header.Set("Authorization", "Bearer "+auth)
-		}
+		req.Header.Set("X-Auth-Token", auth)
 	}
 }
 
