@@ -60,6 +60,13 @@ func main() {
 	mux.Handle("/v1/ai/complete",
 		middleware.Auth(http.HandlerFunc(handlers.Complete)))
 
+	// ── Code execution ─────────────────────────────────────────────────────────
+	mux.Handle("/v1/code/run",
+		middleware.Auth(http.HandlerFunc(handlers.RunCode)))
+
+	mux.Handle("/v1/code/status/",
+		middleware.Auth(http.HandlerFunc(handlers.GetSubmissionStatus)))
+
 	// ── Health ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
