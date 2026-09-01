@@ -64,6 +64,9 @@ func main() {
 	mux.Handle("/v1/code/run",
 		middleware.Auth(http.HandlerFunc(handlers.RunCode)))
 
+	mux.Handle("/v1/code/languages",
+		middleware.Auth(http.HandlerFunc(handlers.ListLanguages)))
+
 	mux.Handle("/v1/code/status/",
 		middleware.Auth(http.HandlerFunc(handlers.GetSubmissionStatus)))
 

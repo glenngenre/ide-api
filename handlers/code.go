@@ -97,6 +97,48 @@ func RunCode(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
+// ListLanguages godoc
+//
+//	@Summary		List Judge0 languages
+//	@Description	Returns the supported languages from Judge0.
+//	@Tags			code
+//	@Produce		json
+//	@Success		200		{array}		models.Language	"Judge0 languages"
+//	@Failure		400		{object}	errorResponse
+//	@Failure		401		{object}	errorResponse
+//	@Failure		502		{object}	errorResponse
+//	@Security		BearerAuth
+//	@Router			/v1/code/languages [get]
+func ListLanguages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, judge0Base+"/languages", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create proxy request")
+		return
+	}
+	proxyReq.Header.Set("Accept", "application/json")
+	applyJudge0Headers(proxyReq)
+
+	resp, err := (&http.Client{}).Do(proxyReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to reach judge0")
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
 // GetSubmissionStatus godoc
 //
 //	@Summary		Fetch Judge0 submission status
