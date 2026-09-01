@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+
+	"skwtr-ide-backend/models"
 )
 
 var judge0Base string
@@ -32,10 +35,10 @@ func applyJudge0Headers(req *http.Request) {
 //	@Summary		Submit code to Judge0
 //	@Description	Forwards a Judge0-style submission request to the remote judge service and returns the queued result.
 //	@Tags			code
-//	@Accept		json
+//	@Accept			json
 //	@Produce		json
-//	@Param			body	body		object	true	"Judge0 submission payload"
-//	@Success		200		{object}	object	"Judge0 response"
+//	@Param			body	body		models.CodeSubmission		true	"Judge0 submission payload"
+//	@Success		200		{object}	models.CodeSubmissionResult	"Judge0 submission token"
 //	@Failure		400		{object}	errorResponse
 //	@Failure		401		{object}	errorResponse
 //	@Failure		502		{object}	errorResponse
@@ -57,7 +60,23 @@ func RunCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, judge0Base+"/submissions?base64_encoded=true&wait=false", bytes.NewReader(body))
+	var submission models.CodeSubmission
+	if err := json.Unmarshal(body, &submission); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if submission.SourceCode == "" || submission.LanguageID == 0 {
+		writeError(w, http.StatusBadRequest, "source_code and language_id are required")
+		return
+	}
+
+	proxyBody, err := json.Marshal(submission)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode submission")
+		return
+	}
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, judge0Base+"/submissions?base64_encoded=true&wait=false", bytes.NewReader(proxyBody))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create proxy request")
 		return
@@ -85,11 +104,11 @@ func RunCode(w http.ResponseWriter, r *http.Request) {
 // GetSubmissionStatus godoc
 //
 //	@Summary		Fetch Judge0 submission status
-//	@Description	Poll the Judge0 submission status for a previously created token. Requires a user JWT.
+//	@Description	Poll the Judge0 submission status for a previously created token.
 //	@Tags			code
 //	@Produce		json
-//	@Param			token	path	string	true	"Submission token"
-//	@Success		200		{object}	object	"Judge0 submission status"
+//	@Param			token	path		string						true	"Submission token"
+//	@Success		200		{object}	models.CodeSubmissionResult	"Judge0 submission status"
 //	@Failure		400		{object}	errorResponse
 //	@Failure		401		{object}	errorResponse
 //	@Failure		502		{object}	errorResponse
