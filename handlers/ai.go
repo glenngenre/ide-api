@@ -17,10 +17,6 @@ func init() {
 	}
 }
 
-type errorResponse struct {
-	Error string `json:"error" example:"something went wrong"`
-}
-
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
