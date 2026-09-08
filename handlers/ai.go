@@ -143,13 +143,3 @@ func Complete(w http.ResponseWriter, r *http.Request) {
 
 	copyResponse(w, resp)
 }
-
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
