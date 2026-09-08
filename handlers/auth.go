@@ -28,10 +28,6 @@ type authResponse struct {
 	Role     string `json:"role"     example:"admin"`
 }
 
-type errorResponse struct {
-	Error string `json:"error" example:"invalid credentials"`
-}
-
 // Login godoc
 //
 //	@Summary		Login
