@@ -105,7 +105,7 @@ func CreateChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var challenge models.Challenge
+	var challenge models.CreateChallengeRequest
 	if err := json.NewDecoder(r.Body).Decode(&challenge); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
