@@ -8,8 +8,8 @@ type ChallengeParameter struct {
 }
 
 type ChallengeTestCase struct {
-	Input  json.RawMessage `json:"input"`
-	Output json.RawMessage `json:"output"`
+	Input  json.RawMessage `json:"input" swaggerignore:"true"`
+	Output json.RawMessage `json:"output" swaggerignore:"true"`
 }
 
 type Challenge struct {
