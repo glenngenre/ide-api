@@ -70,6 +70,13 @@ func main() {
 	mux.Handle("/v1/code/status/",
 		middleware.Auth(http.HandlerFunc(handlers.GetSubmissionStatus)))
 
+	// ── Challenges ────────────────────────────────────────────────────────────
+	mux.Handle("/v1/challenges/daily",
+		middleware.Auth(http.HandlerFunc(handlers.DailyChallenges)))
+
+	mux.Handle("/v1/challenges/",
+		middleware.Auth(http.HandlerFunc(handlers.CompleteChallenge)))
+
 	// ── Health ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
