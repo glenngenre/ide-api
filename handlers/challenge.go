@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"skwtr-ide-backend/db"
 	"skwtr-ide-backend/middleware"
+	"skwtr-ide-backend/models"
 )
 
 // DailyChallenges godoc
@@ -80,4 +82,48 @@ func CompleteChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// CreateChallenge godoc
+//
+//	@Summary		Create a new daily challenge (admin only)
+//	@Description	Stores a new challenge in the database. The ID is auto-generated.
+//	@Tags			challenges
+//	@Accept			json
+//	@Produce		json
+//	@Param			challenge	body		models.Challenge	true	"Challenge data"
+//	@Success		201			{object}	models.Challenge	"Created challenge with ID"
+//	@Failure		400			{object}	errorResponse
+//	@Failure		401			{object}	errorResponse
+//	@Failure		403			{object}	errorResponse	"Only admins can create challenges"
+//	@Failure		500			{object}	errorResponse
+//	@Security		BearerAuth
+//	@Router			/v1/challenges [post]
+func CreateChallenge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var challenge models.Challenge
+	if err := json.NewDecoder(r.Body).Decode(&challenge); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if challenge.Title == "" || challenge.Description == "" {
+		writeError(w, http.StatusBadRequest, "title and description are required")
+		return
+	}
+	if len(challenge.TestCases) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one test case is required")
+		return
+	}
+	created, err := db.CreateChallenge(&challenge)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create challenge: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, created)
 }

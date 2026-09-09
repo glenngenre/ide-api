@@ -77,6 +77,9 @@ func main() {
 	mux.Handle("/v1/challenges/",
 		middleware.Auth(http.HandlerFunc(handlers.CompleteChallenge)))
 
+	mux.Handle("/v1/challenges/",
+		middleware.AdminOnly((http.HandlerFunc(handlers.CreateChallenge))))
+
 	// ── Health ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

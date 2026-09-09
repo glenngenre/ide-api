@@ -263,3 +263,42 @@ func DeleteUser(id int64) error {
 	_, err := DB.Exec(`DELETE FROM users WHERE id = ?`, id)
 	return err
 }
+
+func CreateChallenge(ch *models.Challenge) (*models.Challenge, error) {
+	paramsJSON, err := json.Marshal(ch.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("marshal parameters: %w", err)
+	}
+	testCasesJSON, err := json.Marshal(ch.TestCases)
+	if err != nil {
+		return nil, fmt.Errorf("marshal test cases: %w", err)
+	}
+	langsJSON, err := json.Marshal(ch.SupportedLanguages)
+	if err != nil {
+		return nil, fmt.Errorf("marshal supported languages: %w", err)
+	}
+	startJSON, err := json.Marshal(ch.StartingCode)
+	if err != nil {
+		return nil, fmt.Errorf("marshal starting code: %w", err)
+	}
+
+	res, err := DB.Exec(`
+		INSERT INTO challenges
+		(title, description, difficulty, instructions, function_name, parameters_json,
+		 return_type, test_cases_json, topic, daily_date, supported_languages, starting_code_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.Title, ch.Description, ch.Difficulty, ch.Instructions, ch.FunctionName,
+		paramsJSON, ch.ReturnType, testCasesJSON, ch.Topic, ch.DailyDate,
+		langsJSON, startJSON,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert challenge: %w", err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("get last insert id: %w", err)
+	}
+	ch.ID = id
+	return ch, nil
+}
