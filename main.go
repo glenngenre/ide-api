@@ -75,7 +75,7 @@ func main() {
 		middleware.Auth(http.HandlerFunc(handlers.DailyChallenges)))
 
 	mux.Handle("/v1/challenges/",
-		middleware.Auth(http.HandlerFunc(handlers.CompleteChallenge)))
+		middleware.Auth(http.HandlerFunc(challengeRouter)))
 
 	mux.Handle("/v1/challenges",
 		middleware.AdminOnly(http.HandlerFunc(handlers.CreateChallenge)))
@@ -96,6 +96,14 @@ func main() {
 
 	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+func challengeRouter(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path, "/submit") {
+		handlers.SubmitChallenge(w, r)
+	} else {
+		handlers.CompleteChallenge(w, r)
 	}
 }
 

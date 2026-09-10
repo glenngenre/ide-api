@@ -16,6 +16,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(errorResponse{Error: msg})
 }
 
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	for k, vv := range resp.Header {
 		for _, v := range vv {

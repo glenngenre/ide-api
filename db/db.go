@@ -130,6 +130,40 @@ func CompleteChallenge(challengeID, userID int64) error {
 	return err
 }
 
+func GetChallengeByID(id int64) (*models.Challenge, error) {
+	row := DB.QueryRow(`
+		SELECT id, title, description, difficulty, instructions,
+		       function_name, parameters_json, return_type, test_cases_json,
+		       topic, daily_date, supported_languages, starting_code_json
+		FROM challenges WHERE id = ?`, id)
+
+	var c models.Challenge
+	var parameters, testCases, languages, startingCode string
+	if err := row.Scan(&c.ID, &c.Title, &c.Description, &c.Difficulty, &c.Instructions,
+		&c.FunctionName, &parameters, &c.ReturnType, &testCases, &c.Topic, &c.DailyDate,
+		&languages, &startingCode); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if err := json.Unmarshal([]byte(parameters), &c.Parameters); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(testCases), &c.TestCases); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(languages), &c.SupportedLanguages); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(startingCode), &c.StartingCode); err != nil {
+		return nil, err
+	}
+
+	return &c, nil
+}
+
 func seedDailyChallenge() error {
 	date := time.Now().UTC().Format("2006-01-02")
 
