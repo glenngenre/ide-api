@@ -82,15 +82,14 @@ var ErrChallengeNotFound = errors.New("challenge not found")
 
 func GetDailyChallenges(date string, userID int64) ([]models.Challenge, error) {
 	rows, err := DB.Query(`
-		SELECT c.id, c.title, c.description, c.difficulty, c.instructions,
-		       c.function_name, c.parameters_json, c.return_type, c.test_cases_json,
-		       c.topic, c.daily_date, c.supported_languages, c.starting_code_json,
-		       EXISTS (SELECT 1 FROM challenge_completions cc
-		               WHERE cc.challenge_id = c.id AND cc.user_id = ?)
-		FROM challenges c
-		WHERE c.daily_date = ?
-		ORDER BY c.id DESC
-		LIMIT 1`, userID, date)
+	    SELECT c.id, c.title, c.description, c.difficulty, c.instructions,
+	           c.function_name, c.parameters_json, c.return_type, c.test_cases_json,
+	           c.topic, c.daily_date, c.supported_languages, c.starting_code_json,
+	           EXISTS (SELECT 1 FROM challenge_completions cc
+	                   WHERE cc.challenge_id = c.id AND cc.user_id = ?)
+	    FROM challenges c
+	    ORDER BY c.id DESC
+	    LIMIT 1`, userID)
 	if err != nil {
 		return nil, err
 	}
