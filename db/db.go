@@ -61,7 +61,7 @@ func migrate() error {
 			return_type         TEXT NOT NULL,
 			test_cases_json     TEXT NOT NULL,
 			topic               TEXT NOT NULL,
-			daily_date          TEXT NOT NULL UNIQUE,
+			daily_date          TEXT NOT NULL,
 			supported_languages TEXT NOT NULL,
 			starting_code_json  TEXT NOT NULL
 		);
@@ -319,11 +319,30 @@ func CreateChallenge(ch *models.CreateChallengeRequest) (*models.Challenge, erro
 		return nil, fmt.Errorf("marshal starting code: %w", err)
 	}
 
-	res, err := DB.Exec(`
-        INSERT INTO challenges
-        (title, description, difficulty, instructions, function_name, parameters_json,
-         return_type, test_cases_json, topic, daily_date, supported_languages, starting_code_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	tx, err := DB.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin challenge replacement: %w", err)
+	}
+	defer tx.Rollback()
+
+	// A daily date identifies one challenge. Replacing it also removes stale
+	// completion records from the previous challenge.
+	if _, err := tx.Exec(`
+		DELETE FROM challenge_completions
+		WHERE challenge_id IN (SELECT id FROM challenges WHERE daily_date = ?)`,
+		ch.DailyDate,
+	); err != nil {
+		return nil, fmt.Errorf("delete challenge completions: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM challenges WHERE daily_date = ?`, ch.DailyDate); err != nil {
+		return nil, fmt.Errorf("delete existing challenge: %w", err)
+	}
+
+	res, err := tx.Exec(`
+		INSERT INTO challenges
+		(title, description, difficulty, instructions, function_name, parameters_json,
+		 return_type, test_cases_json, topic, daily_date, supported_languages, starting_code_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Title,
 		ch.Description,
 		ch.Difficulty,
@@ -338,12 +357,15 @@ func CreateChallenge(ch *models.CreateChallengeRequest) (*models.Challenge, erro
 		startJSON,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("insert challenge: %w", err)
+		return nil, fmt.Errorf("insert replacement challenge: %w", err)
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
 		return nil, fmt.Errorf("get last insert id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit challenge replacement: %w", err)
 	}
 
 	return &models.Challenge{

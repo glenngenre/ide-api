@@ -87,7 +87,7 @@ func CompleteChallenge(w http.ResponseWriter, r *http.Request) {
 // CreateChallenge godoc
 //
 //	@Summary		Create a new daily challenge (admin only)
-//	@Description	Stores a new challenge in the database. The ID is auto-generated.
+//	@Description	Stores a daily challenge in the database, replacing any existing challenge for the same daily date.
 //	@Tags			challenges
 //	@Accept			json
 //	@Produce		json
