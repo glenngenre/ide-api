@@ -12,7 +12,7 @@ type LanguageConfig struct {
 
 var languageRegistry = map[string]LanguageConfig{
 	"python": {
-		Judge0ID: 71, // Python 3.8.10
+		Judge0ID: 71, // Python (3.8.1)
 		Name:     "Python",
 		Builder:  &harness.PythonBuilder{},
 	},
@@ -22,12 +22,12 @@ var languageRegistry = map[string]LanguageConfig{
 		Builder:  &harness.JavaScriptBuilder{},
 	},
 	"typescript": {
-		Judge0ID: 74, // TypeScript 4.7.2
+		Judge0ID: 74, // TypeScript (3.7.4)
 		Name:     "TypeScript",
 		Builder:  &harness.TypeScriptBuilder{},
 	},
 	"java": {
-		Judge0ID: 36, // Java (JDK 13.0.1)
+		Judge0ID: 62, // Java (OpenJDK 13.0.1)
 		Name:     "Java",
 		Builder:  &harness.JavaBuilder{},
 	},
