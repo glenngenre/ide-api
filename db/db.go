@@ -87,7 +87,10 @@ func GetDailyChallenges(date string, userID int64) ([]models.Challenge, error) {
 		       c.topic, c.daily_date, c.supported_languages, c.starting_code_json,
 		       EXISTS (SELECT 1 FROM challenge_completions cc
 		               WHERE cc.challenge_id = c.id AND cc.user_id = ?)
-		FROM challenges c WHERE c.daily_date = ? ORDER BY c.id`, userID, date)
+		FROM challenges c
+		WHERE c.daily_date = ?
+		ORDER BY c.id DESC
+		LIMIT 1`, userID, date)
 	if err != nil {
 		return nil, err
 	}
