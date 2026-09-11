@@ -1,259 +1,157 @@
 package challenges
 
 import (
-	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"strings"
-	"time"
 
+	"skwtr-ide-backend/challenges/harness"
 	"skwtr-ide-backend/models"
 )
 
-type judge0Submission struct {
-	SourceCode             string `json:"source_code"`
-	LanguageID             int    `json:"language_id"`
-	RedirectStderrToStdout bool   `json:"redirect_stderr_to_stdout"`
-	CPUTimeLimit           int    `json:"cpu_time_limit"`
+type CaseResult struct {
+	Index         int             `json:"index"`
+	Passed        bool            `json:"passed"`
+	Stdout        string          `json:"stdout"`
+	UserOut       string          `json:"user_out"`
+	Stderr        string          `json:"stderr"`
+	Out           json.RawMessage `json:"out"`
+	Expected      json.RawMessage `json:"expected"`
+	Status        string          `json:"status"`
+	StatusID      int             `json:"status_id"`
+	CompileOutput string          `json:"compile_output,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	Time          string          `json:"time"`
+	Memory        int             `json:"memory"`
 }
 
-type judge0Response struct {
-	Token  string `json:"token"`
-	Status struct {
-		ID          int    `json:"id"`
-		Description string `json:"description"`
-	} `json:"status"`
-	CompileOutput string `json:"compile_output"`
-	Stdout        string `json:"stdout"`
-	Stderr        string `json:"stderr"`
-	Time          string `json:"time"`
-	Memory        int    `json:"memory"`
-}
-
-type HarnessResult struct {
-	Index  int             `json:"i"`
-	Ok     bool            `json:"ok"`
-	Out    json.RawMessage `json:"out"`
-	Err    string          `json:"err"`
-	Stdout string          `json:"stdout"`
-}
-
-var judge0Base string
-
-func init() {
-	judge0Base = strings.TrimRight(os.Getenv("JUDGE0_BASE_URL"), "/")
-	if judge0Base == "" {
-		judge0Base = "https://judge0.apps.skwtr.com"
-	}
-}
-
-func SubmitToJudge0(languageID int, sourceCode string, caseCount int) (*judge0Response, error) {
-	cpuTimeLimit := min(2 + (caseCount / 2), 15)
-
-	submission := judge0Submission{
-		SourceCode:             sourceCode,
-		LanguageID:             languageID,
-		RedirectStderrToStdout: false,
-		CPUTimeLimit:           cpuTimeLimit,
-	}
-
-	submissionJSON, err := json.Marshal(submission)
-	if err != nil {
-		return nil, fmt.Errorf("marshal submission: %w", err)
-	}
-
-	req, err := http.NewRequest(
-		http.MethodPost,
-		judge0Base+"/submissions?base64_encoded=true&wait=false",
-		bytes.NewReader(submissionJSON),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	if auth := strings.TrimSpace(os.Getenv("JUDGE0_AUTHN_TOKEN")); auth != "" {
-		req.Header.Set("X-Auth-Token", auth)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("submit to judge0: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("judge0 error: status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var submitResp struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&submitResp); err != nil {
-		return nil, fmt.Errorf("decode submission response: %w", err)
-	}
-
-	return pollForCompletion(submitResp.Token)
-}
-
-func pollForCompletion(token string) (*judge0Response, error) {
-	maxAttempts := 60
-	attempt := 0
-
-	for attempt < maxAttempts {
-		time.Sleep(500 * time.Millisecond)
-
-		req, err := http.NewRequest(
-			http.MethodGet,
-			judge0Base+"/submissions/"+token+"?base64_encoded=true",
-			nil,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create poll request: %w", err)
-		}
-
-		req.Header.Set("Accept", "application/json")
-		if auth := strings.TrimSpace(os.Getenv("JUDGE0_AUTHN_TOKEN")); auth != "" {
-			req.Header.Set("X-Auth-Token", auth)
-		}
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			attempt++
-			continue
-		}
-		defer resp.Body.Close()
-
-		var result judge0Response
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			attempt++
-			continue
-		}
-
-		if result.Status.ID == 1 || result.Status.ID == 2 {
-			attempt++
-			continue
-		}
-
-		if result.Stdout != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.Stdout)
-			if err == nil {
-				result.Stdout = string(decoded)
-			}
-		}
-		if result.Stderr != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.Stderr)
-			if err == nil {
-				result.Stderr = string(decoded)
-			}
-		}
-		if result.CompileOutput != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.CompileOutput)
-			if err == nil {
-				result.CompileOutput = string(decoded)
-			}
-		}
-
-		return &result, nil
-	}
-
-	return nil, fmt.Errorf("polling timeout after %d attempts", maxAttempts)
-}
-
-func ParseHarnessOutput(stdout string) ([]HarnessResult, string, error) {
-	var results []HarnessResult
-	var harness_errors []string
-
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		if after, ok :=strings.CutPrefix(line, "__SKWTR__ "); ok  {
-			jsonStr := after
-			var result HarnessResult
-			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-				harness_errors = append(harness_errors, fmt.Sprintf("Failed to parse result: %v", err))
-				continue
-			}
-			results = append(results, result)
-		} else {
-			harness_errors = append(harness_errors, line)
-		}
-	}
-
-	stderrMsg := strings.Join(harness_errors, "\n")
-	return results, stderrMsg, nil
-}
-
-func BuildAndTestChallenge(
+func BuildAndTest(
 	challenge *models.Challenge,
 	language string,
 	sourceCode string,
-	testCaseOverrides []models.TestCaseOverride,
-) ([]HarnessResult, *judge0Response, string, error) {
+	overrides []models.TestCaseOverride,
+) ([]CaseResult, error) {
 	langCfg := GetLanguageConfig(language)
 	if langCfg == nil {
-		return nil, nil, "", fmt.Errorf("unsupported language: %s", language)
+		return nil, fmt.Errorf("unsupported language: %s", language)
 	}
 
-	var testCases []models.ChallengeTestCase
-	if len(testCaseOverrides) > 0 {
-		testCases = convertOverridesToTestCases(testCaseOverrides)
-	} else {
-		testCases = challenge.TestCases
-	}
-
-	var casesArray []any
-	for _, tc := range testCases {
-		var inputArray []any
-		if err := json.Unmarshal(tc.Input, &inputArray); err != nil {
-			return nil, nil, "", fmt.Errorf("parse test case input: %w", err)
+	testCases := challenge.TestCases
+	if len(overrides) > 0 {
+		var err error
+		testCases, err = convertOverridesToTestCases(overrides)
+		if err != nil {
+			return nil, err
 		}
-		casesArray = append(casesArray, inputArray)
 	}
 
-	casesJSON, err := json.Marshal(casesArray)
+	wrappedSource := langCfg.Builder.WrapWithStdin(challenge.FunctionName, sourceCode)
+
+	stdinCases := make([]string, len(testCases))
+	for i, tc := range testCases {
+		var args []json.RawMessage
+		if err := json.Unmarshal(tc.Input, &args); err != nil || args == nil {
+			return nil, fmt.Errorf("test case %d input must be a JSON array", i)
+		}
+		stdinCases[i] = string(tc.Input)
+	}
+
+	judge0Results, err := SubmitBatch(langCfg.Judge0ID, wrappedSource, stdinCases)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("marshal cases: %w", err)
+		return nil, fmt.Errorf("batch submit: %w", err)
+	}
+	if len(judge0Results) != len(testCases) {
+		return nil, fmt.Errorf("judge0 returned %d results for %d test cases", len(judge0Results), len(testCases))
 	}
 
-	fullSource, err := langCfg.Builder.Build(challenge.FunctionName, sourceCode, string(casesJSON))
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("build harness: %w", err)
+	results := make([]CaseResult, len(testCases))
+	for i, jr := range judge0Results {
+		userOut, resultLine := splitStdout(jr.Stdout)
+		expected := testCases[i].Output
+
+		var out json.RawMessage
+		var executionError string
+		if jr.Status.ID != 3 {
+			executionError = jr.CompileOutput
+			if executionError == "" {
+				executionError = jr.Stderr
+			}
+			if executionError == "" {
+				executionError = jr.Status.Description
+			}
+			if executionError == "" {
+				executionError = fmt.Sprintf("Execution failed with status %d", jr.Status.ID)
+			}
+		} else if resultLine == "" || !json.Valid([]byte(resultLine)) {
+			executionError = "Missing or invalid JSON result from harness"
+		} else {
+			out = json.RawMessage(resultLine)
+		}
+
+		results[i] = CaseResult{
+			Index:         i,
+			Passed:        executionError == "" && expected != nil && jsonEqual(out, expected),
+			Stdout:        jr.Stdout,
+			UserOut:       userOut,
+			Stderr:        jr.Stderr,
+			Out:           out,
+			Expected:      expected,
+			Status:        jr.Status.Description,
+			StatusID:      jr.Status.ID,
+			CompileOutput: jr.CompileOutput,
+			Error:         executionError,
+			Time:          jr.Time,
+			Memory:        jr.Memory,
+		}
 	}
 
-	judge0Result, err := SubmitToJudge0(langCfg.Judge0ID, fullSource, len(testCases))
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("submit to judge0: %w", err)
-	}
-
-	results, stderrMsg, err := ParseHarnessOutput(judge0Result.Stdout)
-	if err != nil {
-		return nil, judge0Result, stderrMsg, fmt.Errorf("parse harness output: %w", err)
-	}
-
-	return results, judge0Result, stderrMsg, nil
+	return results, nil
 }
 
-func convertOverridesToTestCases(overrides []models.TestCaseOverride) []models.ChallengeTestCase {
-	var cases []models.ChallengeTestCase
-	for _, ov := range overrides {
-		input, _ := json.Marshal(ov.Input)
-		cases = append(cases, models.ChallengeTestCase{
-			Input:  json.RawMessage(input),
-			Output: nil,
-		})
+func splitStdout(raw string) (userOut string, resultLine string) {
+	for offset := 0; offset < len(raw); {
+		relative := strings.Index(raw[offset:], harness.ResultPrefix)
+		if relative < 0 {
+			break
+		}
+		start := offset + relative
+		payloadStart := start + len(harness.ResultPrefix)
+		lineEnd := strings.IndexByte(raw[payloadStart:], '\n')
+		if lineEnd < 0 {
+			break;
+		}
+		end := payloadStart + lineEnd
+		payload := strings.TrimSuffix(raw[payloadStart:end], "\r")
+		if json.Valid([]byte(payload)) {
+			return raw[:start] + raw[end+1:], payload
+		}
+		offset = payloadStart
 	}
-	return cases
+	return raw, ""
+}
+
+// jsonEqual compares two JSON values semantically.
+func jsonEqual(a, b json.RawMessage) bool {
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	aj, _ := json.Marshal(av)
+	bj, _ := json.Marshal(bv)
+	return string(aj) == string(bj)
+}
+
+func convertOverridesToTestCases(overrides []models.TestCaseOverride) ([]models.ChallengeTestCase, error) {
+	cases := make([]models.ChallengeTestCase, len(overrides))
+	for i, ov := range overrides {
+		input, err := json.Marshal(ov.Input)
+		if err != nil {
+			return nil, fmt.Errorf("marshal test case %d input: %w", i, err)
+		}
+		cases[i] = models.ChallengeTestCase{Input: input}
+	}
+	return cases, nil
 }

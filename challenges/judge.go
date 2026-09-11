@@ -1,204 +1,239 @@
 package challenges
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
 )
 
-func Equal(expected, actual json.RawMessage) bool {
-	var expVal, actVal any
+var judge0Base string
 
-	if err := json.Unmarshal(expected, &expVal); err != nil {
-		return false
+func init() {
+	judge0Base = strings.TrimRight(os.Getenv("JUDGE0_BASE_URL"), "/")
+	if judge0Base == "" {
+		judge0Base = "https://judge0.apps.skwtr.com"
 	}
-	if err := json.Unmarshal(actual, &actVal); err != nil {
-		return false
-	}
-
-	return equalValues(expVal, actVal)
 }
 
-func equalValues(expected, actual any) bool {
-	if expected == nil && actual == nil {
-		return true
-	}
-	if expected == nil || actual == nil {
-		return false
+func authHeader() string {
+	return strings.TrimSpace(os.Getenv("JUDGE0_AUTHN_TOKEN"))
+}
+
+type batchSubmission struct {
+	SourceCode             string `json:"source_code"`
+	LanguageID             int    `json:"language_id"`
+	Stdin                  string `json:"stdin"`
+	CPUTimeLimit           int    `json:"cpu_time_limit"`
+	RedirectStderrToStdout bool   `json:"redirect_stderr_to_stdout"`
+}
+
+type batchToken struct {
+	Token string `json:"token"`
+}
+
+type Judge0Result struct {
+	Token  string `json:"token"`
+	Status struct {
+		ID          int    `json:"id"`
+		Description string `json:"description"`
+	} `json:"status"`
+	Stdout        string `json:"stdout"`
+	Stderr        string `json:"stderr"`
+	CompileOutput string `json:"compile_output"`
+	Time          string `json:"time"`
+	Memory        int    `json:"memory"`
+}
+
+func SubmitBatch(languageID int, sourceCode string, stdinCases []string) ([]Judge0Result, error) {
+	if len(stdinCases) == 0 {
+		return []Judge0Result{}, nil
 	}
 
-	if expStr, ok := expected.(string); ok {
-		if actStr, ok := actual.(string); ok {
-			return expStr == actStr
+	submissions := make([]batchSubmission, len(stdinCases))
+	for i, stdin := range stdinCases {
+		submissions[i] = batchSubmission{
+			SourceCode:             sourceCode,
+			LanguageID:             languageID,
+			Stdin:                  stdin,
+			CPUTimeLimit:           5,
+			RedirectStderrToStdout: false,
 		}
-		return false
 	}
 
-	if expBool, ok := expected.(bool); ok {
-		if actBool, ok := actual.(bool); ok {
-			return expBool == actBool
+	body, err := json.Marshal(map[string]any{"submissions": submissions})
+	if err != nil {
+		return nil, fmt.Errorf("marshal batch: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, judge0Base+"/submissions/batch?base64_encoded=false", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if auth := authHeader(); auth != "" {
+		req.Header.Set("X-Auth-Token", auth)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("submit batch: %w", err)
+	}
+	responseBody, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("judge0 batch error %d: %s", resp.StatusCode, responseBody)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read batch response: %w", readErr)
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(responseBody, &items); err != nil {
+		return nil, fmt.Errorf("decode batch tokens: %w; response: %s", err, responseBody)
+	}
+	if len(items) != len(submissions) {
+		return nil, fmt.Errorf("judge0 batch returned %d items, want %d tokens; response: %s", len(items), len(submissions), responseBody)
+	}
+
+	tokenStrs := make([]string, len(items))
+	seen := make(map[string]int, len(items))
+	for i, item := range items {
+		var t batchToken
+		if err := json.Unmarshal(item, &t); err != nil {
+			return nil, fmt.Errorf("decode batch token for submission %d: %w; response: %s", i+1, err, responseBody)
 		}
-		return false
-	}
-
-	if expNum, ok := expected.(float64); ok {
-		if actNum, ok := actual.(float64); ok {
-			return numericEqual(expNum, actNum)
+		if strings.TrimSpace(t.Token) == "" {
+			return nil, fmt.Errorf("judge0 batch submission %d returned no token (possible validation error); response: %s", i+1, responseBody)
 		}
-		return false
+		if previous, ok := seen[t.Token]; ok {
+			return nil, fmt.Errorf("judge0 batch returned duplicate token %q for submissions %d and %d; response: %s", t.Token, previous+1, i+1, responseBody)
+		}
+		seen[t.Token] = i
+		tokenStrs[i] = t.Token
 	}
 
-	if expArr, ok := expected.([]any); ok {
-		if actArr, ok := actual.([]any); ok {
-			if len(expArr) != len(actArr) {
-				return false
+	return pollBatch(tokenStrs)
+}
+
+func pollBatch(tokens []string) ([]Judge0Result, error) {
+	if len(tokens) == 0 {
+		return []Judge0Result{}, nil
+	}
+
+	indices := make(map[string]int, len(tokens))
+	for i, token := range tokens {
+		if strings.TrimSpace(token) == "" {
+			return nil, fmt.Errorf("poll batch: missing token for submission %d", i+1)
+		}
+		if previous, ok := indices[token]; ok {
+			return nil, fmt.Errorf("poll batch: duplicate token %q for submissions %d and %d", token, previous+1, i+1)
+		}
+		indices[token] = i
+	}
+
+	joined := url.QueryEscape(strings.Join(tokens, ","))
+	pollURL := judge0Base + "/submissions/batch?tokens=" + joined + "&base64_encoded=true"
+
+	for attempt := 0; attempt < 60; attempt++ {
+		time.Sleep(500 * time.Millisecond)
+
+		req, err := http.NewRequest(http.MethodGet, pollURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		if auth := authHeader(); auth != "" {
+			req.Header.Set("X-Auth-Token", auth)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		responseBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("judge0 batch poll error %d: %s", resp.StatusCode, responseBody)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read batch poll response: %w", readErr)
+		}
+
+		var wrapper struct {
+			Submissions []Judge0Result `json:"submissions"`
+		}
+		if err := json.Unmarshal(responseBody, &wrapper); err != nil {
+			return nil, fmt.Errorf("decode batch poll response: %w", err)
+		}
+		if len(wrapper.Submissions) != len(tokens) {
+			return nil, fmt.Errorf("judge0 batch poll returned %d submissions, want %d", len(wrapper.Submissions), len(tokens))
+		}
+
+		results := make([]Judge0Result, len(tokens))
+		seen := make([]bool, len(tokens))
+		allDone := true
+		for i, r := range wrapper.Submissions {
+			if strings.TrimSpace(r.Token) == "" {
+				return nil, fmt.Errorf("judge0 batch poll submission %d has no token", i+1)
 			}
-			for i := range expArr {
-				if !equalValues(expArr[i], actArr[i]) {
-					return false
+			index, ok := indices[r.Token]
+			if !ok {
+				return nil, fmt.Errorf("judge0 batch poll returned unexpected token %q", r.Token)
+			}
+			if seen[index] {
+				return nil, fmt.Errorf("judge0 batch poll returned duplicate token %q", r.Token)
+			}
+			seen[index] = true
+
+			// Judge0 status IDs: 1 = In Queue, 2 = Processing, 3–14 = terminal.
+			if r.Status.ID < 1 || r.Status.ID > 14 {
+				return nil, fmt.Errorf("judge0 batch poll token %q has invalid status %d (%q)", r.Token, r.Status.ID, r.Status.Description)
+			}
+			if r.Status.ID == 1 || r.Status.ID == 2 {
+				allDone = false
+			}
+			results[index] = r
+		}
+		if allDone {
+			for i := range results {
+				r := &results[i]
+				for _, field := range []struct {
+					name  string
+					value *string
+				}{
+					{"stdout", &r.Stdout},
+					{"stderr", &r.Stderr},
+					{"compile_output", &r.CompileOutput},
+				} {
+					decoded, err := decodeField(*field.value)
+					if err != nil {
+						return nil, fmt.Errorf("decode batch token %q %s: %w", r.Token, field.name, err)
+					}
+					*field.value = decoded
 				}
 			}
-			return true
+			return results, nil
 		}
-		return false
 	}
 
-	if expObj, ok := expected.(map[string]any); ok {
-		if actObj, ok := actual.(map[string]any); ok {
-			if len(expObj) != len(actObj) {
-				return false
-			}
-			for k, expV := range expObj {
-				if actV, ok := actObj[k]; !ok || !equalValues(expV, actV) {
-					return false
-				}
-			}
-			return true
-		}
-		return false
-	}
-
-	return false
+	return nil, fmt.Errorf("polling timeout")
 }
 
-func numericEqual(expected, actual float64) bool {
-	if expected == actual {
-		return true
+func decodeField(s string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
 	}
-
-	expIsInt := expected == float64(int64(expected))
-	actIsInt := actual == float64(int64(actual))
-
-	if expIsInt && actIsInt {
-		return int64(expected) == int64(actual)
-	}
-
-	const epsilon = 1e-9
-	diff := expected - actual
-	if diff < 0 {
-		diff = -diff
-	}
-
-	if diff < epsilon {
-		return true
-	}
-
-	maxAbs := expected
-	if actual > maxAbs {
-		maxAbs = actual
-	}
-	if maxAbs < 0 {
-		maxAbs = -maxAbs
-	}
-
-	if maxAbs == 0 {
-		return diff == 0
-	}
-
-	return diff/maxAbs < epsilon
-}
-
-func BuildCaseResults(
-	harnessResults []HarnessResult,
-	expectedOutputs []json.RawMessage,
-	testCasesHidden []bool,
-	isOverride bool,
-) []any {
-	results := make([]any, 0, len(expectedOutputs))
-
-	for i := 0; i < len(expectedOutputs); i++ {
-		result := map[string]any{
-			"index": i,
-		}
-
-		hidden := false
-		if i < len(testCasesHidden) {
-			hidden = testCasesHidden[i]
-		}
-		result["hidden"] = hidden
-
-		var harnessResult *HarnessResult
-		for j := range harnessResults {
-			if harnessResults[j].Index == i {
-				harnessResult = &harnessResults[j]
-				break
-			}
-		}
-
-		if harnessResult == nil {
-			passed := false
-			result["passed"] = passed
-			result["error"] = "Test case not executed"
-		} else if !harnessResult.Ok {
-			// Test case had an error
-			passed := false
-			result["passed"] = passed
-			result["error"] = harnessResult.Err
-
-			if !hidden {
-				var inputArray []json.RawMessage
-				if err := json.Unmarshal(harnessResult.Out, &inputArray); err == nil {
-					result["input"] = inputArray
-				}
-				result["stdout"] = harnessResult.Stdout
-			}
-		} else {
-			passed := Equal(expectedOutputs[i], harnessResult.Out)
-
-			if isOverride && expectedOutputs[i] == nil {
-				result["passed"] = nil
-			} else {
-				result["passed"] = passed
-			}
-
-			if !hidden {
-				result["input"] = unmarshalInputArray(harnessResult.Out)
-				result["expected"] = json.RawMessage(expectedOutputs[i])
-				result["actual"] = harnessResult.Out
-				result["stdout"] = harnessResult.Stdout
-			}
-		}
-
-		results = append(results, result)
-	}
-
-	return results
-}
-
-func unmarshalInputArray(data json.RawMessage) []json.RawMessage {
-	var result []json.RawMessage
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil
-	}
-	return result
-}
-
-func CountPassed(results []any) int {
-	count := 0
-	for _, r := range results {
-		if m, ok := r.(map[string]any); ok {
-			if passed, ok := m["passed"].(bool); ok && passed {
-				count++
-			}
-		}
-	}
-	return count
+	return string(b), nil
 }
