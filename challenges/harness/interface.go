@@ -1,5 +1,7 @@
 package harness
 
+const ResultPrefix = "\x1e__SKWTR_RESULT__ "
+
 type HarnessBuilder interface {
-	Build(functionName string, userCode string, casesJSON string) (string, error)
+	WrapWithStdin(functionName string, userCode string) string
 }

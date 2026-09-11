@@ -4,29 +4,21 @@ import "fmt"
 
 type JavaScriptBuilder struct{}
 
-func (b *JavaScriptBuilder) Build(functionName string, userCode string, casesJSON string) (string, error) {
-	harness := fmt.Sprintf(`%s
+func (b *JavaScriptBuilder) WrapWithStdin(functionName, userCode string) string {
+	return fmt.Sprintf(`%s
 
-;(function () {
-  const __cases = %s;
-  const __write = (s) => process.stdout.write(s + "\n");
-  for (let i = 0; i < __cases.length; i++) {
-    const buf = [];
-    const origLog = console.log;
-    console.log = (...a) => { buf.push(a.map(String).join(" ")); };
-    let line;
-    try {
-      const r = (%s)(...__cases[i]);
-      line = { i, ok: true, out: r === undefined ? null : r, stdout: buf.join("\n") };
-    } catch (e) {
-      line = { i, ok: false, err: (e && e.stack) || String(e), stdout: buf.join("\n") };
-    } finally {
-      console.log = origLog;
-    }
-    __write("__SKWTR__ " + JSON.stringify(line));
-  }
-})();
-`, userCode, casesJSON, functionName)
-
-	return harness, nil
+;(async function(fn) {
+  const process = require('process');
+  const write = process.stdout.write.bind(process.stdout);
+  const args = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+  const result = await fn(...args);
+  const output = JSON.stringify(result === undefined ? null : result);
+  if (output === undefined) throw new TypeError('Return value is not JSON serializable');
+  write(%q + output + '\n');
+})(%s).catch((error) => {
+  const process = require('process');
+  process.stderr.write(String(error && error.stack || error) + '\n');
+  process.exitCode = 1;
+});
+`, userCode, ResultPrefix, functionName)
 }
