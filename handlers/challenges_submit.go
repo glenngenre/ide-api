@@ -102,7 +102,7 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	harnessResults, judge0Result, stderrMsg, err := challenges.BuildAndTestChallenge(
+	caseResults, err := challenges.BuildAndTest(
 		challenge,
 		language,
 		sourceCode,
@@ -115,33 +115,48 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 
 	isOverride := len(testCaseOverrides) > 0
 
-	var expectedOutputs []json.RawMessage
-	var hiddenFlags []bool
-
-	if isOverride {
-		for range testCaseOverrides {
-			expectedOutputs = append(expectedOutputs, nil)
-			hiddenFlags = append(hiddenFlags, false)
-		}
-	} else {
-		for _, tc := range challenge.TestCases {
-			expectedOutputs = append(expectedOutputs, tc.Output)
-			hiddenFlags = append(hiddenFlags, tc.Hidden)
+	hiddenFlags := make([]bool, len(caseResults))
+	if !isOverride {
+		for i, tc := range challenge.TestCases {
+			hiddenFlags[i] = tc.Hidden
 		}
 	}
 
-	caseResultsInterface := buildCaseResults(harnessResults, expectedOutputs, hiddenFlags, isOverride)
+	caseResultsInterface := buildCaseResults(caseResults, hiddenFlags, isOverride)
 
 	passedCount := 0
-	for _, r := range caseResultsInterface {
-		if m, ok := r.(map[string]any); ok {
-			if passed, ok := m["passed"].(bool); ok && passed {
-				passedCount++
+	status := models.CodeStatus{ID: 3, Description: "Accepted"}
+	var totalTime float64
+	var maxMemory int
+	var compileOutputs, stderrMessages []string
+	for i, result := range caseResults {
+		executionFailed := result.Error != ""
+		if !executionFailed && result.Passed && !isOverride {
+			passedCount++
+		}
+		if executionFailed && status.ID == 3 {
+			status = models.CodeStatus{ID: result.StatusID, Description: result.Status}
+			if status.ID == 3 {
+				status = models.CodeStatus{ID: 13, Description: "Internal Error"}
+			}
+		}
+		if seconds, err := strconv.ParseFloat(result.Time, 64); err == nil {
+			totalTime += seconds
+		}
+		if result.Memory > maxMemory {
+			maxMemory = result.Memory
+		}
+		if !hiddenFlags[i] {
+			if result.CompileOutput != "" {
+				compileOutputs = append(compileOutputs, result.CompileOutput)
+			}
+			if result.Stderr != "" {
+				stderrMessages = append(stderrMessages, result.Stderr)
 			}
 		}
 	}
 
-	allPassed := passedCount == len(expectedOutputs) && !isOverride && judge0Result.Status.ID == 3
+	allPassed := len(caseResults) > 0 && passedCount == len(caseResults) && !isOverride && status.ID == 3
 
 	if allPassed && !isOverride {
 		userID := middleware.GetClaims(r).UserID
@@ -156,86 +171,70 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 		"passed":       allPassed,
 		"solved":       allPassed && !isOverride,
 		"status": map[string]any{
-			"id":          judge0Result.Status.ID,
-			"description": judge0Result.Status.Description,
+			"id":          status.ID,
+			"description": status.Description,
 		},
-		"time":         judge0Result.Time,
-		"memory":       judge0Result.Memory,
-		"total":        len(expectedOutputs),
+		"time":         strconv.FormatFloat(totalTime, 'f', -1, 64),
+		"memory":       maxMemory,
+		"total":        len(caseResults),
 		"passed_count": passedCount,
 		"results":      caseResultsInterface,
 	}
 
-	if judge0Result.CompileOutput != "" {
-		response["compile_output"] = judge0Result.CompileOutput
+	if len(compileOutputs) > 0 {
+		response["compile_output"] = strings.Join(compileOutputs, "\n")
 	}
-	if stderrMsg != "" {
-		response["stderr"] = stderrMsg
+	if len(stderrMessages) > 0 {
+		response["stderr"] = strings.Join(stderrMessages, "\n")
 	}
 
 	writeJSON(w, http.StatusOK, response)
 }
 
 func buildCaseResults(
-	harnessResults []challenges.HarnessResult,
-	expectedOutputs []json.RawMessage,
+	caseResults []challenges.CaseResult,
 	hiddenFlags []bool,
 	isOverride bool,
 ) []any {
-	results := make([]any, 0, len(expectedOutputs))
+	results := make([]any, 0, len(caseResults))
 
-	for i := range expectedOutputs {
+	for i, caseResult := range caseResults {
+		hidden := i < len(hiddenFlags) && hiddenFlags[i]
+		executionFailed := caseResult.Error != ""
 		result := map[string]any{
-			"index": i,
+			"index":  caseResult.Index,
+			"hidden": hidden,
+			"passed": caseResult.Passed && !executionFailed,
+			"status": map[string]any{
+				"id":          caseResult.StatusID,
+				"description": caseResult.Status,
+			},
+			"time":   caseResult.Time,
+			"memory": caseResult.Memory,
 		}
 
-		hidden := false
-		if i < len(hiddenFlags) {
-			hidden = hiddenFlags[i]
-		}
-		result["hidden"] = hidden
-
-		var harnessResult *challenges.HarnessResult
-		for j := range harnessResults {
-			if harnessResults[j].Index == i {
-				harnessResult = &harnessResults[j]
-				break
+		if executionFailed {
+			result["error"] = "Test case execution failed"
+			if !hidden && caseResult.Error != "" {
+				result["error"] = caseResult.Error
 			}
+		} else if isOverride {
+			result["passed"] = nil
 		}
 
-		if harnessResult == nil {
-			passed := false
-			result["passed"] = passed
-			result["error"] = "Test case not executed"
-		} else if !harnessResult.Ok {
-			passed := false
-			result["passed"] = passed
-			result["error"] = harnessResult.Err
-
-			if !hidden {
-				result["stdout"] = harnessResult.Stdout
+		if !hidden {
+			result["actual"] = caseResult.Out
+			result["out"] = caseResult.Out
+			result["stdout"] = caseResult.UserOut
+			result["user_out"] = caseResult.UserOut
+			if !executionFailed && !isOverride && caseResult.Expected != nil {
+				result["expected"] = caseResult.Expected
 			}
-		} else {
-			passed := challenges.Equal(expectedOutputs[i], harnessResult.Out)
-
-			if isOverride && expectedOutputs[i] == nil {
-				result["passed"] = nil
-			} else {
-				result["passed"] = passed
+			if caseResult.Stderr != "" {
+				result["stderr"] = caseResult.Stderr
 			}
-
-			if !hidden {
-				var actualData any
-				_ = json.Unmarshal(harnessResult.Out, &actualData)
-				result["actual"] = actualData
-
-				if expectedOutputs[i] != nil {
-					var expectedData any
-					_ = json.Unmarshal(expectedOutputs[i], &expectedData)
-					result["expected"] = expectedData
-				}
-
-				result["stdout"] = harnessResult.Stdout
+			if caseResult.CompileOutput != "" {
+				result["compile_output"] = caseResult.CompileOutput
 			}
 		}
 
