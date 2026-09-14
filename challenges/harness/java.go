@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -11,24 +10,28 @@ func (b *JavaBuilder) Build(functionName string, userCode string) (string, error
 	var imports []string
 	var body []string
 	for _, line := range strings.Split(userCode, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "import ") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "import "):
 			imports = append(imports, line)
-		} else {
+		case strings.HasPrefix(trimmed, "package "):
+			continue
+		default:
 			body = append(body, line)
 		}
 	}
 
-	return fmt.Sprintf(`import java.lang.reflect.*;
+	const template = `import java.lang.reflect.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import com.google.gson.*;
-%s
+{{IMPORTS}}
 public class Main {
 
     private static final PrintStream ORIG_OUT = System.out;
 
     // User code
-%s
+{{USER_BODY}}
 
     public static void main(String[] args) {
         Gson gson = new Gson();
@@ -41,7 +44,7 @@ public class Main {
                 return;
             }
             JsonArray input = parsed.getAsJsonArray();
-            String fn = "%s";
+            String fn = "{{FUNCTION_NAME}}";
             Method target = null;
             for (Method method : Main.class.getDeclaredMethods()) {
                 if (method.getName().equals(fn) && method.getParameterCount() == input.size()) {
@@ -101,5 +104,10 @@ public class Main {
         ORIG_OUT.flush();
     }
 }
-`, strings.Join(imports, "\n"), strings.Join(body, "\n"), strings.ReplaceAll(functionName, `"`, `\"`)), nil
+`
+	fn := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`).Replace(functionName)
+	source := strings.Replace(template, "{{IMPORTS}}", strings.Join(imports, "\n"), 1)
+	source = strings.Replace(source, "{{USER_BODY}}", strings.Join(body, "\n"), 1)
+	source = strings.Replace(source, "{{FUNCTION_NAME}}", fn, 1)
+	return source, nil
 }

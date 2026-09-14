@@ -15,10 +15,12 @@ import (
 )
 
 type judge0Submission struct {
-	SourceCode   string `json:"source_code"`
-	LanguageID   int    `json:"language_id"`
-	Stdin        string `json:"stdin"`
-	CPUTimeLimit int    `json:"cpu_time_limit"`
+	SourceCode    string `json:"source_code"`
+	LanguageID    int    `json:"language_id"`
+	Stdin         string `json:"stdin"`
+	CPUTimeLimit  int    `json:"cpu_time_limit"`
+	WallTimeLimit int    `json:"wall_time_limit"`
+	MemoryLimit   int    `json:"memory_limit"`
 }
 
 type judge0Response struct {
@@ -52,12 +54,14 @@ func init() {
 	}
 }
 
-func SubmitToJudge0(languageID int, sourceCode string, stdin string, cpuTimeLimit int) (*judge0Response, error) {
+func SubmitToJudge0(languageID int, sourceCode string, stdin string, cpuTimeLimit int, memoryLimit int) (*judge0Response, error) {
 	submission := judge0Submission{
-		SourceCode:   base64.StdEncoding.EncodeToString([]byte(sourceCode)),
-		LanguageID:   languageID,
-		Stdin:        base64.StdEncoding.EncodeToString([]byte(stdin)),
-		CPUTimeLimit: cpuTimeLimit,
+		SourceCode:    base64.StdEncoding.EncodeToString([]byte(sourceCode)),
+		LanguageID:    languageID,
+		Stdin:         base64.StdEncoding.EncodeToString([]byte(stdin)),
+		CPUTimeLimit:  cpuTimeLimit,
+		WallTimeLimit: cpuTimeLimit + 5,
+		MemoryLimit:   memoryLimit,
 	}
 
 	submissionJSON, err := json.Marshal(submission)
@@ -130,10 +134,11 @@ func pollForCompletion(token string) (*judge0Response, error) {
 			attempt++
 			continue
 		}
-		defer resp.Body.Close()
 
 		var result judge0Response
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if decodeErr != nil {
 			attempt++
 			continue
 		}
@@ -143,24 +148,9 @@ func pollForCompletion(token string) (*judge0Response, error) {
 			continue
 		}
 
-		if result.Stdout != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.Stdout)
-			if err == nil {
-				result.Stdout = string(decoded)
-			}
-		}
-		if result.Stderr != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.Stderr)
-			if err == nil {
-				result.Stderr = string(decoded)
-			}
-		}
-		if result.CompileOutput != "" {
-			decoded, err := base64.StdEncoding.DecodeString(result.CompileOutput)
-			if err == nil {
-				result.CompileOutput = string(decoded)
-			}
-		}
+		result.Stdout = decodeBase64(result.Stdout)
+		result.Stderr = decodeBase64(result.Stderr)
+		result.CompileOutput = decodeBase64(result.CompileOutput)
 
 		return &result, nil
 	}
@@ -178,6 +168,9 @@ func ParseHarnessResult(stdout string) (*HarnessResult, error) {
 		var result HarnessResult
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "__SKWTR__ ")), &result); err != nil {
 			return nil, fmt.Errorf("harness marker found but JSON invalid: %w", err)
+		}
+		if result.Status == "" {
+			return nil, fmt.Errorf("harness marker present but status missing")
 		}
 		return &result, nil
 	}
@@ -220,7 +213,7 @@ func BuildAndTestChallenge(
 			return nil, judge0Result, "", fmt.Errorf("case %d: marshal input: %w", i, err)
 		}
 
-		resp, submitErr := SubmitToJudge0(langCfg.Judge0ID, fullSource, string(stdin), 5)
+		resp, submitErr := SubmitToJudge0(langCfg.Judge0ID, fullSource, string(stdin), 5, 256000)
 		if submitErr != nil {
 			results = append(results, HarnessResult{Index: i, Status: "internal_error", Message: submitErr.Error()})
 			continue
@@ -266,6 +259,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func decodeBase64(value string) string {
+	if value == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return value
+	}
+	return string(decoded)
 }
 
 func convertOverridesToTestCases(overrides []models.TestCaseOverride) []models.ChallengeTestCase {
