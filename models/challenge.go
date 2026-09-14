@@ -58,21 +58,14 @@ type SubmitRequest struct {
 }
 
 type CaseResult struct {
-	Index         int        `json:"index"`
-	Hidden        bool       `json:"hidden"`
-	Passed        *bool      `json:"passed"`
-	Input         []any      `json:"input,omitempty" swaggertype:"array,object"`
-	Expected      any        `json:"expected,omitempty" swaggertype:"object"`
-	Actual        any        `json:"actual,omitempty" swaggertype:"object"`
-	Stdout        string     `json:"stdout,omitempty"`
-	UserOut       string     `json:"user_out,omitempty"`
-	Out           any        `json:"out,omitempty" swaggertype:"object"`
-	Status        CodeStatus `json:"status"`
-	Time          string     `json:"time"`
-	Memory        int        `json:"memory"`
-	Stderr        string     `json:"stderr,omitempty"`
-	CompileOutput string     `json:"compile_output,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	Index    int    `json:"index"`
+	Hidden   bool   `json:"hidden"`
+	Passed   *bool  `json:"passed"`
+	Input    []any  `json:"input,omitempty" swaggertype:"array,object"`
+	Expected any    `json:"expected,omitempty" swaggertype:"object"`
+	Actual   any    `json:"actual,omitempty" swaggertype:"object"`
+	Stdout   string `json:"stdout,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 type SubmitResponse struct {

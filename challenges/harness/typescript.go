@@ -4,21 +4,21 @@ import "fmt"
 
 type TypeScriptBuilder struct{}
 
-func (b *TypeScriptBuilder) WrapWithStdin(functionName, userCode string) string {
+func (b *TypeScriptBuilder) Build(functionName string, userCode string) (string, error) {
 	return fmt.Sprintf(`%s
 
-;(async function(fn: (...args: any[]) => any) {
-  const process = require('process');
-  const write = process.stdout.write.bind(process.stdout);
-  const args: any[] = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-  const result = await fn(...args);
-  const output = JSON.stringify(result === undefined ? null : result);
-  if (output === undefined) throw new TypeError('Return value is not JSON serializable');
-  write(%q + output + '\n');
-})(%s as any).catch((error) => {
-  const process = require('process');
-  process.stderr.write(String(error && error.stack || error) + '\n');
-  process.exitCode = 1;
-});
-`, userCode, ResultPrefix, functionName)
+import * as fs from "fs";
+let __line: any;
+try {
+  const __args = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (!Array.isArray(__args)) throw new Error("stdin must be a JSON array of arguments");
+  const __result = (%s as any)(...__args);
+  __line = { status: "ok", value: __result === undefined ? null : __result };
+} catch (__error) {
+  const __e: any = __error;
+  __line = { status: "runtime_error", error: __e.name || "Error",
+    message: String(__e.message || __e), trace: String(__e.stack || __e) };
+}
+process.stdout.write("\x1e__SKWTR__ " + JSON.stringify(__line) + "\n");
+`, userCode, functionName), nil
 }

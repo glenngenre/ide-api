@@ -4,21 +4,20 @@ import "fmt"
 
 type JavaScriptBuilder struct{}
 
-func (b *JavaScriptBuilder) WrapWithStdin(functionName, userCode string) string {
+func (b *JavaScriptBuilder) Build(functionName string, userCode string) (string, error) {
 	return fmt.Sprintf(`%s
 
-;(async function(fn) {
-  const process = require('process');
-  const write = process.stdout.write.bind(process.stdout);
-  const args = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-  const result = await fn(...args);
-  const output = JSON.stringify(result === undefined ? null : result);
-  if (output === undefined) throw new TypeError('Return value is not JSON serializable');
-  write(%q + output + '\n');
-})(%s).catch((error) => {
-  const process = require('process');
-  process.stderr.write(String(error && error.stack || error) + '\n');
-  process.exitCode = 1;
-});
-`, userCode, ResultPrefix, functionName)
+const __json = require("fs").readFileSync(0, "utf8");
+let __line;
+try {
+  const __args = JSON.parse(__json);
+  if (!Array.isArray(__args)) throw new Error("stdin must be a JSON array of arguments");
+  const __result = (%s)(...__args);
+  __line = { status: "ok", value: __result === undefined ? null : __result };
+} catch (__error) {
+  __line = { status: "runtime_error", error: __error.name || "Error",
+    message: String(__error.message || __error), trace: String(__error.stack || __error) };
+}
+process.stdout.write("\x1e__SKWTR__ " + JSON.stringify(__line) + "\n");
+`, userCode, functionName), nil
 }

@@ -4,16 +4,19 @@ import "fmt"
 
 type PythonBuilder struct{}
 
-func (b *PythonBuilder) WrapWithStdin(functionName, userCode string) string {
-	return fmt.Sprintf(`import json as __skwtr_json, sys as __skwtr_sys
-__skwtr_write = __skwtr_sys.stdout.write
-__skwtr_flush = __skwtr_sys.stdout.flush
+func (b *PythonBuilder) Build(functionName string, userCode string) (string, error) {
+	return fmt.Sprintf(`%s
 
-%s
-
-__skwtr_args = __skwtr_json.loads(__skwtr_sys.stdin.read())
-__skwtr_result = %s(*__skwtr_args)
-__skwtr_write(%q + __skwtr_json.dumps(__skwtr_result, allow_nan=False) + "\n")
-__skwtr_flush()
-`, userCode, functionName, ResultPrefix)
+import json as __json, sys as __sys, traceback as __tb
+try:
+    __args = __json.loads(__sys.stdin.read())
+    if not isinstance(__args, list):
+        raise ValueError("stdin must be a JSON array of arguments")
+    __result = %s(*__args)
+    __line = {"status": "ok", "value": __result}
+except BaseException as __error:
+    __line = {"status": "runtime_error", "error": type(__error).__name__,
+              "message": str(__error), "trace": __tb.format_exc()}
+__sys.stdout.write("\x1e__SKWTR__ " + __json.dumps(__line) + "\n")
+`, userCode, functionName), nil
 }
