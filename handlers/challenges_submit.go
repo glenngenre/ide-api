@@ -149,6 +149,7 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	langCfg := challenges.GetLanguageConfig(language)
+	aggregateStatus := aggregateChallengeStatus(harnessResults, passedCount, len(expectedOutputs), isOverride)
 	response := map[string]any{
 		"challenge_id": challengeID,
 		"language":     language,
@@ -156,8 +157,8 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 		"passed":       allPassed,
 		"solved":       allPassed && !isOverride,
 		"status": map[string]any{
-			"id":          judge0Result.Status.ID,
-			"description": judge0Result.Status.Description,
+			"id":          aggregateStatus.ID,
+			"description": aggregateStatus.Description,
 		},
 		"time":         judge0Result.Time,
 		"memory":       judge0Result.Memory,
@@ -174,6 +175,32 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func aggregateChallengeStatus(
+	results []challenges.HarnessResult,
+	passedCount int,
+	total int,
+	isOverride bool,
+) models.CodeStatus {
+	if !isOverride && passedCount == total {
+		return models.CodeStatus{ID: 3, Description: "Accepted"}
+	}
+
+	for _, result := range results {
+		switch result.Status {
+		case "compile_error", "bad_signature", "bad_input":
+			return models.CodeStatus{ID: 6, Description: "Compilation Error"}
+		case "time_limit":
+			return models.CodeStatus{ID: 5, Description: "Time Limit Exceeded"}
+		case "runtime_error":
+			return models.CodeStatus{ID: 11, Description: "Runtime Error"}
+		case "internal_error":
+			return models.CodeStatus{ID: 13, Description: "Internal Error"}
+		}
+	}
+
+	return models.CodeStatus{ID: 4, Description: "Wrong Answer"}
 }
 
 func buildCaseResults(
