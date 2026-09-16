@@ -100,6 +100,10 @@ func main() {
 }
 
 func challengeRouter(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path, "/submit-stream") {
+		handlers.SubmitChallengeStream(w, r)
+		return
+	}
 	if strings.Contains(r.URL.Path, "/submit") {
 		handlers.SubmitChallenge(w, r)
 	} else {

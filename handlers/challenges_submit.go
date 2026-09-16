@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -177,6 +178,147 @@ func SubmitChallenge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// SubmitChallengeStream streams one SSE result event as each test case completes.
+func SubmitChallengeStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 {
+		writeError(w, http.StatusBadRequest, "invalid challenge id")
+		return
+	}
+	challengeID, err := strconv.ParseInt(parts[len(parts)-2], 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid challenge id")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	var submitReq models.SubmitRequest
+	if err := json.Unmarshal(body, &submitReq); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if submitReq.Language == "" {
+		writeError(w, http.StatusBadRequest, "language is required")
+		return
+	}
+	if submitReq.SourceCode == "" {
+		writeError(w, http.StatusBadRequest, "source_code is required")
+		return
+	}
+	if !challenges.IsSupported(submitReq.Language) {
+		writeError(w, http.StatusBadRequest, "unsupported language")
+		return
+	}
+	if len(submitReq.TestCases) > 10 {
+		writeError(w, http.StatusBadRequest, "override test cases limited to 10")
+		return
+	}
+
+	challenge, err := db.GetChallengeByID(challengeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load challenge")
+		return
+	}
+	if challenge == nil {
+		writeError(w, http.StatusNotFound, "challenge not found")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	writeEvent := func(eventType string, data any) {
+		payload, marshalErr := json.Marshal(data)
+		if marshalErr != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, payload)
+		flusher.Flush()
+	}
+
+	isOverride := len(submitReq.TestCases) > 0
+	total := len(challenge.TestCases)
+	if isOverride {
+		total = len(submitReq.TestCases)
+	}
+	writeEvent("start", map[string]any{"total": total, "language": submitReq.Language})
+
+	var expectedOutputs []json.RawMessage
+	var hiddenFlags []bool
+	if isOverride {
+		for range submitReq.TestCases {
+			expectedOutputs = append(expectedOutputs, nil)
+			hiddenFlags = append(hiddenFlags, false)
+		}
+	} else {
+		for _, tc := range challenge.TestCases {
+			expectedOutputs = append(expectedOutputs, tc.Output)
+			hiddenFlags = append(hiddenFlags, tc.Hidden)
+		}
+	}
+
+	harnessResults, judge0Result, stderrMsg, err := challenges.BuildAndTestChallengeStream(
+		challenge, submitReq.Language, submitReq.SourceCode, submitReq.TestCases,
+		func(result challenges.HarnessResult, expected json.RawMessage, hidden bool, override bool) {
+			caseResult := buildCaseResult(result.Index, result, expected, hidden, override)
+			writeEvent("result", caseResult)
+		},
+	)
+	if err != nil {
+		writeEvent("error", map[string]string{"message": "failed to execute submission: " + err.Error()})
+		return
+	}
+
+	caseResults := buildCaseResults(harnessResults, expectedOutputs, hiddenFlags, isOverride)
+	passedCount := 0
+	for _, result := range caseResults {
+		if item, ok := result.(map[string]any); ok {
+			if passed, ok := item["passed"].(bool); ok && passed {
+				passedCount++
+			}
+		}
+	}
+	allPassed := passedCount == total && !isOverride
+	if allPassed {
+		_ = db.CompleteChallenge(challengeID, middleware.GetClaims(r).UserID)
+	}
+
+	aggregateStatus := aggregateChallengeStatus(harnessResults, passedCount, total, isOverride)
+	done := map[string]any{
+		"challenge_id": challengeID,
+		"language":     submitReq.Language,
+		"language_id":  challenges.GetLanguageConfig(submitReq.Language).Judge0ID,
+		"passed":       allPassed,
+		"solved":       allPassed && !isOverride,
+		"status":       map[string]any{"id": aggregateStatus.ID, "description": aggregateStatus.Description},
+		"time":         judge0Result.Time, "memory": judge0Result.Memory,
+		"total": total, "passed_count": passedCount, "results": caseResults,
+	}
+	if judge0Result.CompileOutput != "" {
+		done["compile_output"] = judge0Result.CompileOutput
+	}
+	if stderrMsg != "" {
+		done["stderr"] = stderrMsg
+	}
+	writeEvent("done", done)
+}
+
 func aggregateChallengeStatus(
 	results []challenges.HarnessResult,
 	passedCount int,
@@ -212,15 +354,10 @@ func buildCaseResults(
 	results := make([]any, 0, len(expectedOutputs))
 
 	for i := range expectedOutputs {
-		result := map[string]any{
-			"index": i,
-		}
-
 		hidden := false
 		if i < len(hiddenFlags) {
 			hidden = hiddenFlags[i]
 		}
-		result["hidden"] = hidden
 
 		var harnessResult *challenges.HarnessResult
 		for j := range harnessResults {
@@ -231,46 +368,43 @@ func buildCaseResults(
 		}
 
 		if harnessResult == nil {
-			passed := false
-			result["passed"] = passed
-			result["error"] = "Test case not executed"
-		} else if harnessResult.Status != "ok" {
-			passed := false
-			result["passed"] = passed
-			result["error"] = firstHarnessError(*harnessResult)
-
-			if !hidden {
-				result["stdout"] = ""
-			}
-		} else {
-			passed := challenges.Equal(expectedOutputs[i], harnessResult.Value)
-
-			if isOverride && expectedOutputs[i] == nil {
-				result["passed"] = nil
-			} else {
-				result["passed"] = passed
-			}
-
-			if !hidden {
-				var actualData any
-				_ = json.Unmarshal(harnessResult.Value, &actualData)
-				result["actual"] = actualData
-
-				if expectedOutputs[i] != nil {
-					var expectedData any
-					_ = json.Unmarshal(expectedOutputs[i], &expectedData)
-					result["expected"] = expectedData
-				}
-
-				result["stdout"] = ""
-			}
-
+			results = append(results, map[string]any{"index": i, "hidden": hidden, "passed": false, "error": "Test case not executed"})
+			continue
 		}
-
-		results = append(results, result)
+		results = append(results, buildCaseResult(i, *harnessResult, expectedOutputs[i], hidden, isOverride))
 	}
 
 	return results
+}
+
+func buildCaseResult(index int, harnessResult challenges.HarnessResult, expected json.RawMessage, hidden, isOverride bool) map[string]any {
+	result := map[string]any{"index": index, "hidden": hidden}
+	if harnessResult.Status != "ok" {
+		result["passed"] = false
+		result["error"] = firstHarnessError(harnessResult)
+		if !hidden {
+			result["stdout"] = ""
+		}
+		return result
+	}
+
+	if isOverride && expected == nil {
+		result["passed"] = nil
+	} else {
+		result["passed"] = challenges.Equal(expected, harnessResult.Value)
+	}
+	if !hidden {
+		var actualData any
+		_ = json.Unmarshal(harnessResult.Value, &actualData)
+		result["actual"] = actualData
+		if expected != nil {
+			var expectedData any
+			_ = json.Unmarshal(expected, &expectedData)
+			result["expected"] = expectedData
+		}
+		result["stdout"] = ""
+	}
+	return result
 }
 
 func firstHarnessError(result challenges.HarnessResult) string {

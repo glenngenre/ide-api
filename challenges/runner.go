@@ -183,6 +183,26 @@ func BuildAndTestChallenge(
 	sourceCode string,
 	testCaseOverrides []models.TestCaseOverride,
 ) ([]HarnessResult, *judge0Response, string, error) {
+	return buildAndTestChallenge(challenge, language, sourceCode, testCaseOverrides, nil)
+}
+
+func BuildAndTestChallengeStream(
+	challenge *models.Challenge,
+	language string,
+	sourceCode string,
+	testCaseOverrides []models.TestCaseOverride,
+	onResult func(result HarnessResult, expected json.RawMessage, hidden bool, isOverride bool),
+) ([]HarnessResult, *judge0Response, string, error) {
+	return buildAndTestChallenge(challenge, language, sourceCode, testCaseOverrides, onResult)
+}
+
+func buildAndTestChallenge(
+	challenge *models.Challenge,
+	language string,
+	sourceCode string,
+	testCaseOverrides []models.TestCaseOverride,
+	onResult func(result HarnessResult, expected json.RawMessage, hidden bool, isOverride bool),
+) ([]HarnessResult, *judge0Response, string, error) {
 	langCfg := GetLanguageConfig(language)
 	if langCfg == nil {
 		return nil, nil, "", fmt.Errorf("unsupported language: %s", language)
@@ -215,7 +235,9 @@ func BuildAndTestChallenge(
 
 		resp, submitErr := SubmitToJudge0(langCfg.Judge0ID, fullSource, string(stdin), 5, 256000)
 		if submitErr != nil {
-			results = append(results, HarnessResult{Index: i, Status: "internal_error", Message: submitErr.Error()})
+			result := HarnessResult{Index: i, Status: "internal_error", Message: submitErr.Error()}
+			results = append(results, result)
+			emitHarnessResult(onResult, result, tc.Output, tc.Hidden, len(testCaseOverrides) > 0)
 			continue
 		}
 		judge0Result = resp
@@ -224,10 +246,13 @@ func BuildAndTestChallenge(
 		if parseErr == nil {
 			result.Index = i
 			results = append(results, *result)
+			emitHarnessResult(onResult, *result, tc.Output, tc.Hidden, len(testCaseOverrides) > 0)
 			continue
 		}
 
-		results = append(results, classifyJudge0Result(i, resp))
+		classified := classifyJudge0Result(i, resp)
+		results = append(results, classified)
+		emitHarnessResult(onResult, classified, tc.Output, tc.Hidden, len(testCaseOverrides) > 0)
 		if message := firstNonEmpty(resp.Stderr, resp.CompileOutput, resp.Stdout); message != "" {
 			stderrMessages = append(stderrMessages, message)
 		}
@@ -237,6 +262,18 @@ func BuildAndTestChallenge(
 		judge0Result = &judge0Response{}
 	}
 	return results, judge0Result, strings.Join(stderrMessages, "\n"), nil
+}
+
+func emitHarnessResult(
+	onResult func(result HarnessResult, expected json.RawMessage, hidden bool, isOverride bool),
+	result HarnessResult,
+	expected json.RawMessage,
+	hidden bool,
+	isOverride bool,
+) {
+	if onResult != nil {
+		onResult(result, expected, hidden, isOverride)
+	}
 }
 
 func classifyJudge0Result(index int, resp *judge0Response) HarnessResult {
