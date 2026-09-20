@@ -300,3 +300,94 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// Refresh godoc
+//
+//	@Summary		Exchange a refresh token for a new token pair
+//	@Description	Rotates the refresh token. Reusing a revoked token revokes the entire token family.
+//	@Tags			auth
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		refreshRequest	true	"Refresh token"
+//	@Success		200		{object}	authResponse
+//	@Failure		400		{object}	errorResponse
+//	@Failure		401		{object}	errorResponse
+//	@Failure		500		{object}	errorResponse
+//	@Router			/v1/auth/refresh [post]
+func Refresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "refresh_token is required")
+		return
+	}
+
+	rt, err := db.GetRefreshToken(middleware.HashRefreshToken(req.RefreshToken))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if rt == nil {
+		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	if rt.RevokedAt != nil {
+		_ = db.RevokeFamily(rt.FamilyID)
+		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+	if time.Now().After(rt.ExpiresAt) {
+		writeError(w, http.StatusUnauthorized, "refresh token expired")
+		return
+	}
+
+	ok, err := db.RevokeRefreshTokenIfActive(rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	user, err := db.GetUserByID(rt.UserID)
+	if err != nil || user == nil {
+		writeError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	access, err := middleware.IssueToken(user.ID, user.Username, user.Role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+
+	refreshPlain, refreshHash, err := middleware.NewRefreshToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+	if err := db.CreateRefreshToken(
+		user.ID, refreshHash, rt.FamilyID, time.Now().Add(middleware.RefreshTTL()),
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, authResponse{
+		Token:        access,
+		RefreshToken: refreshPlain,
+		Username:     user.Username,
+		Role:         user.Role,
+	})
+}
