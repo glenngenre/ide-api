@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -23,9 +24,21 @@ type registerRequest struct {
 }
 
 type authResponse struct {
-	Token    string `json:"token"    example:"eyJhbGci..."`
-	Username string `json:"username" example:"admin"`
-	Role     string `json:"role"     example:"admin"`
+	Token        string `json:"token"         example:"eyJhbGci..."`
+	RefreshToken string `json:"refresh_token" example:"7Yq2..."`
+	Username     string `json:"username"      example:"admin"`
+	Role         string `json:"role"          example:"admin"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token" example:"7Yq2..."`
+}
+
+type tokenPair struct {
+	Token        string `json:"token"         example:"eyJhbGci..."`
+	RefreshToken string `json:"refresh_token" example:"7Yq2..."`
+	Username     string `json:"username"      example:"admin"`
+	Role         string `json:"role"          example:"admin"`
 }
 
 // Login godoc
@@ -74,16 +87,35 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := middleware.IssueToken(user.ID, user.Username, user.Role)
+	access, err := middleware.IssueToken(user.ID, user.Username, user.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to issue token")
 		return
 	}
 
+	refreshPlain, refreshHash, err := middleware.NewRefreshToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+
+	familyID, err := middleware.NewFamilyID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+	if err := db.CreateRefreshToken(
+		user.ID, refreshHash, familyID, time.Now().Add(middleware.RefreshTTL()),
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, authResponse{
-		Token:    token,
-		Username: user.Username,
-		Role:     user.Role,
+		Token:        access,
+		RefreshToken: refreshPlain,
+		Username:     user.Username,
+		Role:         user.Role,
 	})
 }
 
@@ -230,19 +262,41 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-func parseInt64(s string) (int64, error) {
-	var n int64
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, &parseError{}
-		}
-		n = n*10 + int64(c-'0')
+// Logout godoc
+//
+//	@Summary		Logout a user
+//	@Description	Revokes the submitted refresh token and its entire token family.
+//	@Tags			auth
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		refreshRequest	true	"Refresh token"
+//	@Success		204	"No Content"
+//	@Failure		400	{object}	errorResponse
+//	@Failure		500	{object}	errorResponse
+//	@Router			/v1/auth/logout [post]
+func Logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
 	}
-	return n, nil
+
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	rt, err := db.GetRefreshToken(middleware.HashRefreshToken(req.RefreshToken))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if rt != nil {
+		if err := db.RevokeFamily(rt.FamilyID); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
-
-type parseError struct{}
-
-func (e *parseError) Error() string { return "parse error" }
