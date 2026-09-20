@@ -41,6 +41,20 @@ func Init() {
 	log.Printf("db: ready at %s", path)
 }
 
+func StartTokenCleanup(interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			if _, err := DB.Exec(`
+				DELETE FROM refresh_tokens
+				WHERE expires_at < CAST(strftime('%s','now','-7 days') AS INTEGER)`); err != nil {
+				log.Printf("db: refresh token cleanup: %v", err)
+			}
+		}
+	}()
+}
+
 func migrate() error {
 	_, err := DB.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
@@ -71,6 +85,18 @@ func migrate() error {
 			completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (user_id, challenge_id)
 		);
+		CREATE TABLE IF NOT EXISTS refresh_tokens (
+		    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		    token_hash BLOB    NOT NULL UNIQUE,
+		    family_id  TEXT    NOT NULL,
+		    expires_at INTEGER NOT NULL,
+		    revoked_at INTEGER,
+		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx   ON refresh_tokens (user_id);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_family_id_idx ON refresh_tokens (family_id);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_expires_idx   ON refresh_tokens (expires_at);
 	`)
 	if err != nil {
 		return err
@@ -292,7 +318,7 @@ func ListUsers() ([]models.User, error) {
 		}
 		users = append(users, u)
 	}
-	return users, nil
+	return users, rows.Err()
 }
 
 func DeleteUser(id int64) error {
@@ -385,4 +411,67 @@ func CreateChallenge(ch *models.CreateChallengeRequest) (*models.Challenge, erro
 		SupportedLanguages: ch.SupportedLanguages,
 		StartingCode:       ch.StartingCode,
 	}, nil
+}
+
+type RefreshToken struct {
+	ID        int64
+	UserID    int64
+	FamilyID  string
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+func CreateRefreshToken(userID int64, hash []byte, familyID string, expiresAt time.Time) error {
+	_, err := DB.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at)
+		VALUES (?, ?, ?, ?)`,
+		userID, hash, familyID, expiresAt.UTC().Unix())
+	return err
+}
+
+func GetRefreshToken(hash []byte) (*RefreshToken, error) {
+	var rt RefreshToken
+	var expiresAt int64
+	var revokedAt sql.NullInt64
+
+	err := DB.QueryRow(`
+		SELECT id, user_id, family_id, expires_at, revoked_at
+		FROM refresh_tokens
+		WHERE token_hash = ?`, hash).
+		Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &expiresAt, &revokedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	rt.ExpiresAt = time.Unix(expiresAt, 0).UTC()
+	if revokedAt.Valid {
+		t := time.Unix(revokedAt.Int64, 0).UTC()
+		rt.RevokedAt = &t
+	}
+
+	return &rt, nil
+}
+
+func RevokeRefreshTokenIfActive(id int64) (bool, error) {
+	res, err := DB.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = CAST(strftime('%s','now') AS INTEGER)
+		WHERE id = ? AND revoked_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func RevokeFamily(familyID string) error {
+	_, err := DB.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = CAST(strftime('%s','now') AS INTEGER)
+		WHERE family_id = ? AND revoked_at IS NULL`, familyID)
+	return err
 }
