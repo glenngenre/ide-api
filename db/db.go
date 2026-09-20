@@ -41,6 +41,20 @@ func Init() {
 	log.Printf("db: ready at %s", path)
 }
 
+func StartTokenCleanup(interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			if _, err := DB.Exec(`
+				DELETE FROM refresh_tokens
+				WHERE expires_at < datetime('now', '-7 days')`); err != nil {
+				log.Printf("db: refresh token cleanup: %v", err)
+			}
+		}
+	}()
+}
+
 func migrate() error {
 	_, err := DB.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
@@ -71,6 +85,18 @@ func migrate() error {
 			completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (user_id, challenge_id)
 		);
+		CREATE TABLE IF NOT EXISTS refresh_tokens (
+		    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		    token_hash BLOB    NOT NULL UNIQUE,
+		    family_id  TEXT    NOT NULL,
+		    expires_at DATETIME NOT NULL,
+		    revoked_at DATETIME,
+		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx   ON refresh_tokens (user_id);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_family_id_idx ON refresh_tokens (family_id);
+		CREATE INDEX IF NOT EXISTS refresh_tokens_expires_idx   ON refresh_tokens (expires_at);
 	`)
 	if err != nil {
 		return err
@@ -385,4 +411,59 @@ func CreateChallenge(ch *models.CreateChallengeRequest) (*models.Challenge, erro
 		SupportedLanguages: ch.SupportedLanguages,
 		StartingCode:       ch.StartingCode,
 	}, nil
+}
+
+type RefreshToken struct {
+	ID        int64
+	UserID    int64
+	FamilyID  string
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+func CreateRefreshToken(userID int64, hash []byte, familyID string, expiresAt time.Time) error {
+	_, err := DB.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at)
+		VALUES ($1, $2, $3, $4)`,
+		userID, hash, familyID, expiresAt)
+	return err
+}
+
+func GetRefreshToken(hash []byte) (*RefreshToken, error) {
+	var rt RefreshToken
+	err := DB.QueryRow(`
+		SELECT id, user_id, family_id, expires_at, revoked_at
+		FROM refresh_tokens
+		WHERE token_hash = $1`, hash).
+		Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &rt.ExpiresAt, &rt.RevokedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rt, nil
+}
+
+// RevokeRefreshTokenIfActive atomically claims a token for rotation.
+// Returns false if it was already revoked — i.e. we lost a concurrent race.
+func RevokeRefreshTokenIfActive(id int64) (bool, error) {
+	res, err := DB.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = now()
+		WHERE id = $1 AND revoked_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// RevokeFamily kills an entire rotation chain (theft response).
+func RevokeFamily(familyID string) error {
+	_, err := DB.Exec(`
+		UPDATE refresh_tokens
+		SET revoked_at = now()
+		WHERE family_id = $1 AND revoked_at IS NULL`, familyID)
+	return err
 }

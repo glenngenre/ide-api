@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,12 +30,7 @@ func jwtSecret() []byte {
 }
 
 func IssueToken(userID int64, username, role string) (string, error) {
-	ttl := 24 * time.Hour
-	if v := os.Getenv("JWT_TTL_HOURS"); v != "" {
-		if h, err := strconv.Atoi(v); err == nil && h > 0 {
-			ttl = time.Duration(h) * time.Hour
-		}
-	}
+	ttl := accessTTL()
 
 	claims := Claims{
 		UserID:   userID,
