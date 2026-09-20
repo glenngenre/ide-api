@@ -31,3 +31,18 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, &parseError{}
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n, nil
+}
+
+type parseError struct{}
+
+func (e *parseError) Error() string { return "parse error" }

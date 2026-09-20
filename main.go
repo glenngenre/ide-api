@@ -43,6 +43,8 @@ func main() {
 
 	// ── Auth ──────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/v1/auth/login", handlers.Login)
+	mux.HandleFunc("/v1/auth/refresh", handlers.Refresh)
+	mux.HandleFunc("/v1/auth/logout", handlers.Logout)
 
 	mux.Handle("/v1/auth/register",
 		middleware.AdminOnly(http.HandlerFunc(handlers.Register)))
